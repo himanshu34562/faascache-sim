@@ -35,7 +35,7 @@ def compute_mem_per_min(file, ret=False):
     memUsageFname = os.path.join(log_dir, file)
 
     try:
-        df = pd.read_csv(memUsageFname, error_bad_lines=False, warn_bad_lines=False)
+        df = pd.read_csv(memUsageFname, on_bad_lines='skip')
     except:
         print(file)
         raise
@@ -44,14 +44,14 @@ def compute_mem_per_min(file, ret=False):
     # print(start)
     # print(end)
     df2 = pd.DataFrame([start, end], columns=df.columns)
-    df = df.append(df2)
+    df = pd.concat([df, df2], ignore_index=False)
 
     sort = df.sort_values(by=["time", "mem_used"])
     dedup = sort.drop_duplicates(subset=["time"], keep="last")
     dedup.index = (dedup["time"] / 1000).apply(datetime.fromtimestamp)
     # upsample to second detail since there may be gaps
     # then downsample to minute buckets for 
-    dedup = dedup.resample("S").mean().interpolate().resample("1Min").interpolate()
+    dedup = dedup.resample("s").mean(numeric_only=True).interpolate().resample("1min").interpolate()
 
     save_path = "{}-{}-{}-{}.npy".format(policy, num_funcs, mem_cap, run)
     save_path = os.path.join(memory_path, save_path)
