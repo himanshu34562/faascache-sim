@@ -5,10 +5,10 @@ from LambdaData import *
 import pickle
 from math import ceil
 
-store = "/data2/alfuerst/azure/functions/trace_pckl/"
+store = "/home/himanshu_34562/cloud_computing/faascache-project/experiments/traces/split_funcs/"
 buckets = [str(i) for i in range(1, 1441)]
 
-datapath = "/data2/alfuerst/azure/functions/"
+datapath = "/home/himanshu_34562/cloud_computing/faascache-project/azure-raw-data/"
 durations = "function_durations_percentiles.anon.d01.csv"
 invocations = "invocations_per_function_md.anon.d01.csv"
 mem_fnames = "app_memory_percentiles.anon.d01.csv"
@@ -60,7 +60,7 @@ file = os.path.join(datapath, invocations.format(1))
 invocations = pd.read_csv(file)
 invocations = invocations.dropna()
 invocations.index = invocations["HashFunction"]
-sums = invocations.sum(axis=1)
+sums = invocations[buckets].sum(axis=1)
 invocations = invocations[sums > 1] # action must be invoked at least twice
 invocations = invocations.drop_duplicates("HashFunction")
 
@@ -76,5 +76,5 @@ memory["divvied"] = new_mem
 
 joined = joined.join(memory, how="inner", on="HashApp", lsuffix='', rsuffix='_mems')
 
-with Pool() as p:
+with Pool(processes=1) as p:
     p.map(trace_row, joined.iterrows())
