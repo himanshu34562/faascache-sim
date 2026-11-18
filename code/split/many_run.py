@@ -54,15 +54,15 @@ def compare_pols(policy, num_functions, char, mem_capacity=32000, args=None):
 
 def run_multiple_expts(args):
     policies = ["GD", "TTL", "LRU", "LND", "HIST", "FREQ", "SIZE"]
-    mems = [i for i in range(1000, 80000, args.memstep)]
+    mems = [i for i in range(args.memmin, args.memmax, args.memstep)]
     mems = set(mems)
     results = []
     print(len(policies) * len(mems))
-    with mp.Pool() as pool:
+    with mp.Pool(args.workers) as pool:
         for policy in policies:
             for mem in mems:
                 for num_func in [args.numfuncs]:
-                    for char in ["b"]:
+                    for char in [args.char]:
                         result = pool.apply_async(compare_pols, [policy, num_func, char, mem, args])
                         results.append(result)
         [result.wait() for result in results]
@@ -78,6 +78,11 @@ if __name__ == "__main__":
     parser.add_argument("--savedir", type=str, default="/data2/alfuerst/verify-test/", required=False)
     parser.add_argument("--logdir", type=str, default="/data2/alfuerst/verify-test/logs/", required=False)
     parser.add_argument("--memstep", type=int, default=3000, required=False)
+    # Defaults below reproduce the original hardcoded behaviour
+    parser.add_argument("--memmin", type=int, default=1000, help="smallest memory size (MB)")
+    parser.add_argument("--memmax", type=int, default=80000, help="memory sweep upper bound (MB, exclusive)")
+    parser.add_argument("--char", type=str, default="b", help="trace variant label, i.e. the X in {numfuncs}-X.pckl")
+    parser.add_argument("--workers", type=int, default=None, help="parallel simulations (default: all cores)")
     args = parser.parse_args()
     if not os.path.exists(args.savedir):
         os.makedirs(args.savedir)

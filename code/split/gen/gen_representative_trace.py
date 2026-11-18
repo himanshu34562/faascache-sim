@@ -101,7 +101,7 @@ def convert_to_two_hour(path):
         
     print("done", save_pth)
 
-def gen_traces(sizes, runs):
+def gen_traces(sizes, runs, max_func_mb=0):
     global durations
     global invocations
     global memory
@@ -148,6 +148,20 @@ def gen_traces(sizes, runs):
             missing, len(joined), store))
     joined = joined[have]
 
+    if max_func_mb:
+        # Running containers can't be evicted, so a function whose *own* concurrent demand exceeds
+        # what a server can hold swamps memory and makes every keep-alive policy look identical.
+        # Little's law at the function's busiest minute: concurrency ~= rate/s * duration (s).
+        # Uses the cold-start time (Maximum, which is what the simulator runs a cold start for):
+        # while one cold start runs, every new arrival also goes cold, so this is the burst the
+        # function needs after any eviction. Using Average alone still left 50%+ requests dropped.
+        peak_rate = joined[buckets].max(axis=1) / 60.0
+        demand_mb = peak_rate * (joined["Maximum"] / 1000.0) * joined["divvied"]
+        too_big = demand_mb > max_func_mb
+        print("excluding {} of {} functions whose peak cold-start burst demand > {} MB "
+              "(largest: {:.0f} MB)".format(int(too_big.sum()), len(joined), max_func_mb, demand_mb.max()))
+        joined = joined[~too_big]
+
     os.makedirs(save_dir, exist_ok=True)
     for size in sizes:
         for run in runs:
@@ -155,17 +169,20 @@ def gen_traces(sizes, runs):
 
 if __name__ == "__main__":
     # Upstream generated every size in range(8, 400, 4) x runs a/b/c (~290 traces).
-    # We default to just the paper's 392-function trace; pass --sizes/--runs for more.
+    # Defaults to just the paper's 392-function trace; pass --sizes/--runs for more.
     parser = argparse.ArgumentParser(description="Build representative traces from split_funcs pickles")
     parser.add_argument("--sizes", type=int, nargs="+", default=[392],
                         help="number of functions per trace (multiples of 4)")
     parser.add_argument("--runs", nargs="+", default=["a"],
                         help="single-letter variant labels, e.g. a b c")
+    parser.add_argument("--max-func-mb", type=int, default=2048,
+                        help="exclude functions whose peak cold-start burst memory (peak rate x Maximum duration x mem) "
+                             "exceeds this many MB; 0 disables the filter")
     parser.add_argument("--two-hour", action="store_true",
                         help="also write 12:00-14:00 cuts of each trace to representative_two_hour/")
     args = parser.parse_args()
 
-    gen_traces(args.sizes, args.runs)
+    gen_traces(args.sizes, args.runs, args.max_func_mb)
 
     if args.two_hour:
         os.makedirs(two_hour_dir, exist_ok=True)

@@ -87,9 +87,9 @@ def plot_all(args):
     funcs = args.numfuncs
     filt = "-{}-".format(funcs)
     for file in os.listdir(data_path):
-        if filt in file and "b" in file and "LONG-TTL" not in file:
+        if filt in file and file.endswith("-{}.pckl".format(args.char)) and "LONG-TTL" not in file:
             policy, num_funcs, mem, run = get_info_from_file(file)
-            if 10000 <= mem <= 80000:
+            if args.memmin <= mem <= args.memmax:
                 # policy: string
                 # analysis: output from analyze_timings
                 # capacity_misses: dict[func_name] = invocations_not_handled
@@ -113,6 +113,10 @@ if __name__ == "__main__":
     parser.add_argument("--analyzeddir", type=str, default="/data2/alfuerst/verify-test/analyzed", required=False)
     parser.add_argument("--plotdir", type=str, default="../figs/increase_with_mem/", required=False)
     parser.add_argument("--numfuncs", type=int, default=392, required=False)
+    # Defaults reproduce the original hardcoded filters
+    parser.add_argument("--char", type=str, default="b", help="trace variant label ({policy}-{n}-{mem}-X.pckl)")
+    parser.add_argument("--memmin", type=int, default=10000, help="smallest memory size to plot (MB)")
+    parser.add_argument("--memmax", type=int, default=80000, help="largest memory size to plot (MB)")
     args = parser.parse_args()
     data_path = args.analyzeddir
     plot_dir = args.plotdir
