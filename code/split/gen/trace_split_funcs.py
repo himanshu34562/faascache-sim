@@ -1,20 +1,38 @@
 import os
+import sys
 import pandas as pd
 from multiprocessing import Pool
+
+# Make LambdaData importable no matter where this script is run from
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from LambdaData import *
 import pickle
 from math import ceil
 
-store = "/home/himanshu_34562/cloud_computing/faascache-project/experiments/traces/split_funcs/"
+# Paths are relative to the faascache-project repo root (sim-upstream is a submodule of it).
+# Override with FAASCACHE_ROOT if your layout differs.
+ROOT = os.environ.get("FAASCACHE_ROOT",
+                      os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
+store = os.path.join(ROOT, "experiments/traces/split_funcs/")
 buckets = [str(i) for i in range(1, 1441)]
 
-datapath = "/home/himanshu_34562/cloud_computing/faascache-project/azure-raw-data/"
+datapath = os.path.join(ROOT, "azure-raw-data/")
 durations = "function_durations_percentiles.anon.d01.csv"
 invocations = "invocations_per_function_md.anon.d01.csv"
 mem_fnames = "app_memory_percentiles.anon.d01.csv"
+# Optional cap (0 = no cap). Set e.g. SPLIT_MAX_INVOCATIONS=10000000 on low-RAM machines.
+MAX_INVOCS = int(os.environ.get("SPLIT_MAX_INVOCATIONS", "0"))
 
 def trace_row(data):
     index, row = data
+    out_pth = os.path.join(store, index+".pckl")
+    if os.path.exists(out_pth):
+        return  # resumable: already written by an earlier (possibly interrupted) run
+    total = int(row[buckets].sum())
+    if MAX_INVOCS and total > MAX_INVOCS:
+        # One tuple per invocation: a 100M-call/day function needs >10GB RAM and kills the worker
+        print("skipping {} ({} invocations/day > SPLIT_MAX_INVOCATIONS={})".format(index, total, MAX_INVOCS), flush=True)
+        return
     secs_p_min = 60
     milis_p_sec = 1000
     trace = list()
@@ -37,13 +55,15 @@ def trace_row(data):
     # print(trace)
     out_trace = sorted(trace, key=lambda x:x[1]) #(lamdata, t)
 
-    out_pth = os.path.join(store, index+".pckl")
     # files are traces themselves. Just need to combine them together
-    # format: (lambdas, trace) => 
+    # format: (lambdas, trace) =>
     # lambdas:    dict[func_name] = (mem_size, cold_time, warm_time)
     # trace = [LambdaData(func_name, mem, cold_time, warm_time), start_time]
-    with open(out_pth, "w+b") as f:
+    # Write to a temp file then rename, so a killed worker never leaves a truncated .pckl behind
+    tmp_pth = out_pth + ".tmp"
+    with open(tmp_pth, "w+b") as f:
         pickle.dump((lambdas, out_trace), f)
+    os.replace(tmp_pth, out_pth)
     # return lambdas, out_trace
 
 def divive_by_func_num(row):
@@ -76,5 +96,9 @@ memory["divvied"] = new_mem
 
 joined = joined.join(memory, how="inner", on="HashApp", lsuffix='', rsuffix='_mems')
 
-with Pool(processes=1) as p:
-    p.map(trace_row, joined.iterrows())
+os.makedirs(store, exist_ok=True)
+# 1 worker by default for low-memory machines; raise via SPLIT_WORKERS=4 etc.
+with Pool(processes=int(os.environ.get("SPLIT_WORKERS", "1"))) as p:
+    # small chunks: if a worker dies, only a few functions are lost (and a rerun resumes them)
+    for _ in p.imap_unordered(trace_row, joined.iterrows(), chunksize=16):
+        pass
