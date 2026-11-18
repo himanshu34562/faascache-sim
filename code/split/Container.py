@@ -7,6 +7,8 @@ class Container:
     keep_alive_start_t = 0
     in_cache = False 
     frequency = 0 #Number of in-cache accesses (Streak)
+    dfreq = 0.0   #Exponentially decayed access count (GDD/GDX extension policies)
+    dfreq_t = 0.0 #Wall time (ms) dfreq was last updated
     state = "COLD"
     
     def __init__(self, lamdata: LambdaData):

@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
-from math import floor, isnan
+from math import floor, isnan, exp
 import random
 import heapq
 from collections import defaultdict
@@ -22,6 +22,8 @@ class LambdaScheduler:
         self.mem_capacity = mem_capacity
         self.mem_used = 0
         self.eviction_policy = policy
+        self.gd_params = self.parse_gd_variant(policy)
+        self.hfreq = dict()  # GDH: func-name -> (count, last update time ms)
         self.Clock = 0
         self.wall_time = 0
         self.finish_times = []
@@ -243,6 +245,56 @@ class LambdaScheduler:
 
     ##############################################################
 
+    @staticmethod
+    def parse_gd_variant(policy):
+        """ Extension policies (GD generalisations), parameters encoded in the name so result
+        files stay {policy}-{n}-{mem}-{char}.pckl (no '-' allowed in the name):
+          GDW_a<a>_b<b>_c<c>   Priority = Clock + Freq^a * Cost^b / Size^c   (GD = a1_b1_c1)
+          GDD_t<tau_min>       GD with exponentially decayed frequency, time constant tau (minutes)
+          GDX_a.._b.._c.._t..  both combined
+          GDH[_t<tau_min>]     GD with per-function frequency that survives eviction
+                               (optionally decayed with time constant tau)
+        Returns None for every other policy. """
+        family = policy.split("_")[0]
+        if family not in ("GDW", "GDD", "GDX", "GDH"):
+            return None
+        params = {"a": 1.0, "b": 1.0, "c": 1.0, "t": None, "h": family == "GDH"}
+        for tok in policy.split("_")[1:]:
+            key, val = tok[0], tok[1:]
+            if key not in params or val == "":
+                raise ValueError("bad GD-variant parameter {!r} in policy {!r}".format(tok, policy))
+            params[key] = float(val)
+        if family == "GDD" and params["t"] is None:
+            raise ValueError("GDD policy needs a time constant, e.g. GDD_t30")
+        if params["t"] is not None:
+            params["tau_ms"] = params["t"] * 60 * 1000
+        if not params["h"]:
+            del params["h"]  # keep the dict minimal for the non-history variants
+        return params
+
+    def decayed_freq(self, c):
+        """ Container's access count, exponentially decayed to the current wall time. """
+        return c.dfreq * exp(-(self.wall_time - c.dfreq_t) / self.gd_params["tau_ms"])
+
+    def history_freq(self, kind):
+        """ GDH: function's access count kept across evictions, decayed to now if tau is set. """
+        val, t = self.hfreq.get(kind, (0.0, self.wall_time))
+        if self.gd_params["t"] is not None:
+            val *= exp(-(self.wall_time - t) / self.gd_params["tau_ms"])
+        return val
+
+    def record_access(self, c):
+        """ Update extension-policy counters on an access (called right after c.run()). """
+        if self.gd_params is None:
+            return
+        if self.gd_params.get("h"):
+            self.hfreq[c.metadata.kind] = (self.history_freq(c.metadata.kind) + 1, self.wall_time)
+        elif self.gd_params["t"] is not None:
+            c.dfreq = self.decayed_freq(c) + 1
+            c.dfreq_t = self.wall_time
+
+    ##############################################################
+
     def calc_priority(self, c, update=False):
         """ GD prio calculation as per eq 1 .
         If update==True, then dont replace the clock value. 
@@ -265,6 +317,23 @@ class LambdaScheduler:
             cost = float(c.metadata.run_time - c.metadata.warm_time)  # run_time - warm_time, or just warm_time , or warm/run_time
             size = c.metadata.mem_size
             prio = clock + freq*(cost/size)
+
+        elif self.gd_params is not None:
+            p = self.gd_params
+            clones = self.container_clones(c)
+            if p.get("h"):
+                # survives eviction: a popular function that lost its containers comes back
+                # with its history instead of starting again from 0
+                freq = self.history_freq(c.metadata.kind)
+            elif p["t"] is None:
+                freq = sum([x.frequency for x in clones])  # identical to GD
+            else:
+                # same "in-cache" semantics as GD (sum over live containers), but each container's
+                # count decays with time constant tau, so stale popularity fades
+                freq = sum([self.decayed_freq(x) for x in clones])
+            cost = float(c.metadata.run_time - c.metadata.warm_time)
+            size = c.metadata.mem_size
+            prio = clock + (freq ** p["a"]) * (cost ** p["b"]) / (size ** p["c"])
 
         elif self.eviction_policy == "LND":
             # For now, assume this is called only on accesses.
@@ -519,6 +588,7 @@ class LambdaScheduler:
                 self.capacity_misses[d.kind] += 1
                 return
             c.run()
+            self.record_access(c)
             #Need to update priority here?
             processing_time = d.run_time
             self.running_c[c] = (t, t+processing_time)
@@ -527,6 +597,7 @@ class LambdaScheduler:
         else:
             # Strong assumption. If we can find the container, it is warm.
             c.run()
+            self.record_access(c)
             processing_time = d.warm_time # d.run_time - d.warm_time
             self.running_c[c] = (t, t+processing_time)
             self.WritePerfLog(d, t, "hit")

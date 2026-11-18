@@ -47,13 +47,22 @@ def compare_pols(policy, num_functions, char, mem_capacity=32000, args=None):
         # capacity_misses: dict[func_name] = invocations_not_handled
         # len_trace: long
         data = (policy, L.evdict, L.miss_stats(), lambdas, L.capacity_misses, len(trace))
-        with open(save_pth, "w+b") as f:
+        # write-then-rename: a run killed mid-save never leaves a truncated result
+        # (which later sweeps would silently skip as "already done")
+        with open(save_pth + ".tmp", "w+b") as f:
             pickle.dump(data, f)
+        os.replace(save_pth + ".tmp", save_pth)
+
+        if args.delete_logs:
+            # per-invocation CSV logs are ~60MB/run on the full-day trace; everything the
+            # analysis needs is already in the result pickle (miss_stats read them above)
+            for fname in (L.PerfLogFName, L.MemUsageFname, L.PureCacheFname):
+                os.remove(fname)
 
     print("done", name)
 
 def run_multiple_expts(args):
-    policies = ["GD", "TTL", "LRU", "LND", "HIST", "FREQ", "SIZE"]
+    policies = args.policies
     mems = [i for i in range(args.memmin, args.memmax, args.memstep)]
     mems = set(mems)
     results = []
@@ -83,6 +92,11 @@ if __name__ == "__main__":
     parser.add_argument("--memmax", type=int, default=80000, help="memory sweep upper bound (MB, exclusive)")
     parser.add_argument("--char", type=str, default="b", help="trace variant label, i.e. the X in {numfuncs}-X.pckl")
     parser.add_argument("--workers", type=int, default=None, help="parallel simulations (default: all cores)")
+    parser.add_argument("--delete-logs", action="store_true",
+                        help="delete each run's per-invocation CSV logs once its result is saved "
+                             "(they are only used by plotting/compute_mem_usage.py)")
+    parser.add_argument("--policies", nargs="+", default=["GD", "TTL", "LRU", "LND", "HIST", "FREQ", "SIZE"],
+                        help="policies to run; extension variants e.g. GDW_a1_b1_c0.5 GDD_t30 (see LambdaScheduler.parse_gd_variant)")
     args = parser.parse_args()
     if not os.path.exists(args.savedir):
         os.makedirs(args.savedir)
